@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { ServerConfig, RecordingConfig, StreamingConfig, StreamBehaviorConfig, RecordBehaviorConfig, DSPConfig, GeneralConfig, AppLanguage, StreamingMode } from '../types';
 import { EQ_PRESETS, DEFAULT_PROFILE_CONFIG } from '../constants';
+import { streamingService } from '../services/streamingService';
 
 interface SettingsViewProps {
   // Global State
@@ -54,8 +55,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onBack, onShowToast, onAddLog, t
 }) => {
   const [settingsTab, setSettingsTab] = useState<'general' | 'server' | 'audio' | 'streaming' | 'record' | 'dsp'>('server');
-  // UI State for simpler view
   const [isAdvancedMode, setIsAdvancedMode] = useState(false);
+  const [isUpdatingTitle, setIsUpdatingTitle] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const activeProfile = profiles.find(p => p.id === activeProfileId) || profiles[0];
@@ -177,11 +178,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }));
   };
   
-  const handleUpdateLiveTitle = () => {
-    onAddLog(`Queuing title update to "${streamBehavior.liveTitle}" in ${streamBehavior.titleUpdateDelay}s...`, 'info');
-    setTimeout(() => {
-      onAddLog(`METADATA UPDATED: Title changed to "${streamBehavior.liveTitle}"`, 'success');
-    }, streamBehavior.titleUpdateDelay * 1000);
+  const handleUpdateLiveTitle = async () => {
+    if (isUpdatingTitle) return;
+    setIsUpdatingTitle(true);
+    onAddLog(`Updating title to "${streamBehavior.liveTitle}"...`, 'info');
+    
+    try {
+      await streamingService.updateMetadata(activeProfile, streamConfig, streamBehavior.liveTitle);
+      onAddLog(`METADATA UPDATED: "${streamBehavior.liveTitle}"`, 'success');
+      onShowToast('Title Updated on Server');
+    } catch (e: any) {
+      onAddLog(`Failed to update title: ${e.message}`, 'error');
+    } finally {
+      setIsUpdatingTitle(false);
+    }
   };
 
   // Helper for Bitrate Options
@@ -512,9 +522,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           />
                           <button 
                             onClick={handleUpdateLiveTitle}
-                            className="bg-cyan-900 hover:bg-cyan-800 text-cyan-100 text-xs font-bold px-4 rounded border border-cyan-700 transition-colors"
+                            disabled={isUpdatingTitle}
+                            className="bg-cyan-900 hover:bg-cyan-800 text-cyan-100 text-xs font-bold px-4 rounded border border-cyan-700 transition-colors disabled:opacity-50"
                           >
-                            UPDATE
+                            {isUpdatingTitle ? '...' : 'UPDATE'}
                           </button>
                         </div>
                       </div>
@@ -593,45 +604,77 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   <div className="border-b border-gray-700 pb-2 mb-4">
                       <h3 className="text-lg text-white font-bold">Local Recording</h3>
                   </div>
-                  
-                  <div className="bg-gray-900 p-4 rounded border border-gray-800 space-y-4">
-                       <h4 className="text-sm text-gray-300 font-bold uppercase border-b border-gray-700 pb-2">Archive Settings</h4>
-                       <div className="space-y-2">
-                        <label className="text-xs text-gray-400 font-bold">File Name Pattern</label>
-                        <input 
-                            type="text" 
-                            value={recBehavior.fileNamePattern}
-                            onChange={e => setRecBehavior(prev => ({...prev, fileNamePattern: e.target.value}))}
-                            className="w-full bg-[#111] border border-gray-700 p-2 rounded text-white text-xs focus:border-red-500 outline-none"
-                            placeholder="rec_%Y%m%d-%H%M%S"
-                        />
-                        <p className="text-[10px] text-gray-500">Files are saved to your device's <b>Downloads</b> folder.</p>
+
+                  <div className="bg-gray-900 p-4 rounded border border-gray-800 space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="space-y-1">
+                              <label className="text-xs text-red-500 font-bold">Format</label>
+                              <select 
+                                value={recConfig.codec} 
+                                onChange={e => setRecConfig(prev => ({...prev, codec: e.target.value as any}))} 
+                                className="w-full bg-[#111] border border-gray-700 p-2 rounded text-white text-xs focus:border-red-500 outline-none"
+                              >
+                                <option value="OPUS">OPUS (WebM) - Efficient</option>
+                                <option value="MP3">MP3 - Standard</option>
+                                <option value="AAC">AAC - High Quality</option>
+                                <option value="OGG">OGG (Vorbis)</option>
+                              </select>
+                          </div>
+                          <div className="space-y-1">
+                              <label className="text-xs text-red-500 font-bold">Bitrate (kbps)</label>
+                              <select 
+                                value={recConfig.bitrate} 
+                                onChange={e => setRecConfig(prev => ({...prev, bitrate: parseInt(e.target.value)}))} 
+                                className="w-full bg-[#111] border border-gray-700 p-2 rounded text-white text-xs focus:border-red-500 outline-none"
+                              >
+                                {renderBitrateOptions()}
+                              </select>
+                          </div>
+                      </div>
+                      
+                      <div className="space-y-1">
+                          <label className="text-xs text-gray-400 font-bold uppercase">Filename Pattern</label>
+                          <input 
+                              type="text" 
+                              value={recBehavior.fileNamePattern}
+                              onChange={e => setRecBehavior(prev => ({...prev, fileNamePattern: e.target.value}))}
+                              className="w-full bg-[#111] border border-gray-700 p-2 rounded text-white text-xs focus:border-red-500 outline-none font-mono"
+                          />
+                          <p className="text-[10px] text-gray-500">Variables: %Y, %m, %d, %H, %M, %S</p>
                       </div>
 
-                      {/* Recording Format - VISIBLE TO ALL */}
-                      <div className="grid grid-cols-2 gap-4 mt-4">
-                            <div className="space-y-1">
-                            <label className="text-xs text-gray-400 font-bold">Format</label>
-                            <select 
-                            value={recConfig.codec} 
-                            onChange={e => setRecConfig(prev => ({ ...prev, codec: e.target.value as any }))} 
-                            className="w-full bg-[#111] border border-gray-700 text-white text-xs p-2 rounded focus:border-red-500 outline-none"
-                            >
-                            <option value="OPUS">OPUS</option>
-                            <option value="MP3">MP3</option>
-                            </select>
-                            </div>
-                            <div className="space-y-1">
-                            <label className="text-xs text-gray-400 font-bold">Quality</label>
-                            <select 
-                            value={recConfig.bitrate} 
-                            onChange={e => setRecConfig(prev => ({ ...prev, bitrate: parseInt(e.target.value) }))} 
-                            className="w-full bg-[#111] border border-gray-700 text-white text-xs p-2 rounded focus:border-red-500 outline-none"
-                            >
-                              {renderBitrateOptions()}
-                            </select>
-                            </div>
-                      </div>
+                       <div className="p-3 bg-black/40 rounded border border-gray-700/50">
+                          <h4 className="text-xs text-gray-400 font-bold uppercase mb-2">Automation</h4>
+                          <div className="space-y-2">
+                             <label className="flex items-center gap-2 cursor-pointer">
+                                <input 
+                                  type="checkbox" 
+                                  checked={recBehavior.startOnConnect}
+                                  onChange={e => setRecBehavior(prev => ({...prev, startOnConnect: e.target.checked}))}
+                                  className="accent-red-500"
+                                />
+                                <span className="text-xs text-gray-300">Auto-start recording when streaming starts</span>
+                             </label>
+                             <label className="flex items-center gap-2 cursor-pointer">
+                                <input 
+                                  type="checkbox" 
+                                  checked={recBehavior.stopOnDisconnect}
+                                  onChange={e => setRecBehavior(prev => ({...prev, stopOnDisconnect: e.target.checked}))}
+                                  className="accent-red-500"
+                                />
+                                <span className="text-xs text-gray-300">Auto-stop recording when streaming stops</span>
+                             </label>
+                             <label className="flex items-center gap-2 cursor-pointer">
+                                <input 
+                                  type="checkbox" 
+                                  checked={recBehavior.startOnLaunch}
+                                  onChange={e => setRecBehavior(prev => ({...prev, startOnLaunch: e.target.checked}))}
+                                  className="accent-red-500"
+                                />
+                                <span className="text-xs text-gray-300">Start recording immediately on app launch</span>
+                             </label>
+                          </div>
+                       </div>
                   </div>
                 </div>
               )}
@@ -640,104 +683,96 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {settingsTab === 'dsp' && (
                 <div className="max-w-xl mx-auto space-y-6 animate-in fade-in slide-in-from-right-2 duration-300">
                   <div className="border-b border-gray-700 pb-2 mb-4">
-                      <h3 className="text-lg text-white font-bold">Sound Effects</h3>
-                      <p className="text-[10px] text-gray-500">Enhance your voice quality.</p>
+                      <h3 className="text-lg text-white font-bold">Digital Signal Processing</h3>
                   </div>
 
-                  {/* Simple DSP Toggle */}
+                  {/* COMPRESSOR */}
                   <div className="bg-gray-900 p-4 rounded border border-gray-800 space-y-4">
-                      <div className="flex items-center justify-between">
-                         <span className="text-sm text-white font-bold">Microphone Booster (Compressor)</span>
-                         <label className="relative inline-flex items-center cursor-pointer">
+                      <div className="flex items-center justify-between mb-2">
+                        <h4 className="text-sm text-yellow-500 font-bold uppercase">Dynamic Compressor</h4>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input 
+                            type="checkbox" 
+                            className="sr-only peer"
+                            checked={dspConfig.compressor.enabled}
+                            onChange={e => setDspConfig(prev => ({...prev, compressor: {...prev.compressor, enabled: e.target.checked}}))}
+                          />
+                          <div className="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-yellow-600"></div>
+                        </label>
+                      </div>
+
+                      <div className={`grid grid-cols-2 gap-4 transition-opacity ${dspConfig.compressor.enabled ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+                          <div className="space-y-1">
+                              <div className="flex justify-between text-[10px] text-gray-400">
+                                <span>Threshold</span>
+                                <span>{dspConfig.compressor.threshold} dB</span>
+                              </div>
+                              <input 
+                                type="range" min="-60" max="0" step="1"
+                                value={dspConfig.compressor.threshold}
+                                onChange={e => setDspConfig(prev => ({...prev, compressor: {...prev.compressor, threshold: parseFloat(e.target.value)}}))}
+                                className="w-full accent-yellow-500 h-1 bg-gray-700 rounded-lg appearance-none"
+                              />
+                          </div>
+                          <div className="space-y-1">
+                              <div className="flex justify-between text-[10px] text-gray-400">
+                                <span>Ratio</span>
+                                <span>{dspConfig.compressor.ratio}:1</span>
+                              </div>
+                              <input 
+                                type="range" min="1" max="20" step="0.5"
+                                value={dspConfig.compressor.ratio}
+                                onChange={e => setDspConfig(prev => ({...prev, compressor: {...prev.compressor, ratio: parseFloat(e.target.value)}}))}
+                                className="w-full accent-yellow-500 h-1 bg-gray-700 rounded-lg appearance-none"
+                              />
+                          </div>
+                      </div>
+                  </div>
+
+                  {/* EQUALIZER */}
+                  <div className="bg-gray-900 p-4 rounded border border-gray-800 space-y-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <h4 className="text-sm text-blue-500 font-bold uppercase">5-Band Equalizer</h4>
+                        <div className="flex items-center gap-3">
+                           <select 
+                              value={dspConfig.equalizer.preset}
+                              onChange={e => handleEQPresetChange(e.target.value)}
+                              className="bg-[#111] border border-gray-700 text-xs text-white p-1 rounded outline-none"
+                              disabled={!dspConfig.equalizer.enabled}
+                           >
+                              <option value="Manual">Manual</option>
+                              {Object.keys(EQ_PRESETS).map(k => <option key={k} value={k}>{k}</option>)}
+                           </select>
+                           <label className="relative inline-flex items-center cursor-pointer">
                             <input 
                               type="checkbox" 
                               className="sr-only peer"
-                              checked={dspConfig.compressor.enabled}
-                              onChange={e => setDspConfig(prev => ({...prev, compressor: {...prev.compressor, enabled: e.target.checked}}))}
+                              checked={dspConfig.equalizer.enabled}
+                              onChange={e => setDspConfig(prev => ({...prev, equalizer: {...prev.equalizer, enabled: e.target.checked}}))}
                             />
-                            <div className="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-orange-600"></div>
-                        </label>
-                      </div>
-                      <p className="text-xs text-gray-500">Makes your voice sound louder and more consistent.</p>
-
-                      {isAdvancedMode && (
-                          <div className={`grid grid-cols-2 gap-4 mt-2 pt-2 border-t border-gray-800`}>
-                            <div className="space-y-1">
-                                <div className="flex justify-between text-xs text-gray-400">
-                                  <span>Threshold</span>
-                                  <span>{dspConfig.compressor.threshold} dB</span>
-                                </div>
-                                <input 
-                                  type="range" min="-100" max="0" step="1"
-                                  value={dspConfig.compressor.threshold}
-                                  onChange={e => setDspConfig(prev => ({...prev, compressor: {...prev.compressor, threshold: parseInt(e.target.value)}}))}
-                                  className="w-full accent-orange-500 h-1 bg-gray-700 rounded-lg appearance-none"
-                                />
-                            </div>
-                             <div className="space-y-1">
-                                <div className="flex justify-between text-xs text-gray-400">
-                                  <span>Ratio</span>
-                                  <span>{dspConfig.compressor.ratio}:1</span>
-                                </div>
-                                <input 
-                                  type="range" min="1" max="20" step="0.5"
-                                  value={dspConfig.compressor.ratio}
-                                  onChange={e => setDspConfig(prev => ({...prev, compressor: {...prev.compressor, ratio: parseFloat(e.target.value)}}))}
-                                  className="w-full accent-orange-500 h-1 bg-gray-700 rounded-lg appearance-none"
-                                />
-                            </div>
-                          </div>
-                      )}
-                  </div>
-
-                  {/* EQUALIZER SECTION */}
-                  <div className="bg-gray-900 p-4 rounded border border-gray-800 space-y-4">
-                      <div className="flex items-center justify-between border-b border-gray-800 pb-2">
-                        <div className="flex items-center gap-2">
-                          <h4 className="text-sm text-gray-300 font-bold uppercase">Equalizer</h4>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <select 
-                              disabled={!dspConfig.equalizer.enabled}
-                              value={dspConfig.equalizer.preset}
-                              onChange={e => handleEQPresetChange(e.target.value)}
-                              className="bg-black border border-gray-700 text-xs text-white p-1 rounded focus:border-cyan-500 outline-none"
-                          >
-                              <option value="Manual">Manual</option>
-                              {Object.keys(EQ_PRESETS).map(k => (
-                                <option key={k} value={k}>{k}</option>
-                              ))}
-                          </select>
-                          <label className="relative inline-flex items-center cursor-pointer">
-                              <input 
-                                type="checkbox" 
-                                className="sr-only peer"
-                                checked={dspConfig.equalizer.enabled}
-                                onChange={e => setDspConfig(prev => ({...prev, equalizer: {...prev.equalizer, enabled: e.target.checked}}))}
-                              />
-                              <div className="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-600"></div>
+                            <div className="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
                           </label>
                         </div>
                       </div>
-                      
-                      <div className={`flex justify-between items-end h-40 pt-4 px-2 transition-opacity duration-300 ${dspConfig.equalizer.enabled ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
-                        {dspConfig.equalizer.bands.map((band, idx) => (
-                          <div key={idx} className="flex flex-col items-center gap-2 h-full w-12 group">
-                            <span className="text-[9px] font-mono text-cyan-300">{band.gain > 0 ? `+${band.gain}` : band.gain}</span>
-                            <div className="relative flex-1 w-full flex justify-center bg-[#111] rounded-full py-2">
-                                <input 
-                                  type="range"
-                                  min="-12" max="12" step="1"
-                                  value={band.gain}
-                                  onChange={e => handleEQBandChange(idx, parseInt(e.target.value))}
-                                  className="h-full -rotate-90 w-28 accent-cyan-500 bg-transparent cursor-pointer appearance-none absolute top-0 bottom-0 m-auto"
-                                  style={{ width: '8rem' }} // Force width for vertical rotation context
-                                />
-                                <div className="absolute top-1/2 left-0 right-0 h-[1px] bg-gray-700 pointer-events-none"></div>
-                            </div>
-                            <span className="text-[10px] text-gray-400 font-bold">{band.frequency >= 1000 ? `${band.frequency/1000}k` : band.frequency}</span>
-                          </div>
-                        ))}
+
+                      <div className={`flex justify-between items-end h-32 gap-2 transition-opacity ${dspConfig.equalizer.enabled ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+                          {dspConfig.equalizer.bands.map((band, idx) => (
+                              <div key={idx} className="flex flex-col items-center h-full w-full">
+                                  <div className="relative flex-1 w-full flex justify-center bg-black/20 rounded p-1">
+                                      <input 
+                                        type="range" 
+                                        min="-12" max="12" step="1"
+                                        // Removed non-standard 'orient' attribute
+                                        value={band.gain}
+                                        onChange={e => handleEQBandChange(idx, parseFloat(e.target.value))}
+                                        className="h-full w-2 accent-blue-500 appearance-none bg-gray-700 rounded cursor-pointer vertical-range"
+                                        style={{ WebkitAppearance: 'slider-vertical' } as any} 
+                                      />
+                                  </div>
+                                  <span className="text-[9px] text-gray-400 mt-2 font-mono">{band.frequency < 1000 ? band.frequency : `${band.frequency/1000}k`}</span>
+                                  <span className="text-[9px] text-blue-400 font-mono">{band.gain > 0 ? `+${band.gain}` : band.gain}</span>
+                              </div>
+                          ))}
                       </div>
                   </div>
                 </div>

@@ -158,6 +158,36 @@ export class StreamingService {
     }
   }
 
+  async updateMetadata(server: ServerConfig, streamConfig: StreamingConfig, title: string): Promise<void> {
+    // Only works in Cloudflare mode due to CORS/Backend requirement
+    if (streamConfig.mode !== 'CLOUDFLARE') {
+      console.warn("Metadata update only supported in Cloudflare Mode currently.");
+      return;
+    }
+
+    const host = window.location.host; 
+    const params = new URLSearchParams({
+      host: server.address,
+      port: server.port.toString(),
+      user: server.user || 'admin',
+      pass: server.password,
+      mount: server.mount,
+      type: server.type,
+      title: title
+    });
+
+    const url = `${window.location.protocol}//${host}/metadata?${params.toString()}`;
+    
+    try {
+      const res = await fetch(url);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Unknown error');
+    } catch (e) {
+      console.error("Failed to update metadata", e);
+      throw e;
+    }
+  }
+
   disconnect() {
     // Close WebSocket
     if (this.socket) {

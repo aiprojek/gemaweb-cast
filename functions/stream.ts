@@ -87,16 +87,15 @@ async function handleSession(
       handshake = `${pass}\n`;
     } else {
       // Icecast / Shoutcast v2 Source Protocol (HTTP PUT)
-      // Note: Minimal headers. Content-Type usually defaults to audio/mpeg or defined by client.
+      // FIX: Removed 'Transfer-Encoding: chunked' to support raw streaming which is more compatible.
       const auth = btoa(`${user}:${pass}`);
       handshake = `PUT ${mount} HTTP/1.1\r\n` +
                   `Host: ${host}\r\n` +
                   `Authorization: Basic ${auth}\r\n` +
-                  `User-Agent: GemaWebCast/1.0\r\n` +
+                  `User-Agent: GemaWebCast/1.4\r\n` +
                   `Content-Type: audio/mpeg\r\n` +
                   `Ice-Public: 0\r\n` +
                   `Ice-Name: GemaWeb Live\r\n` + 
-                  `Transfer-Encoding: chunked\r\n` + 
                   `Expect: 100-continue\r\n` + 
                   `\r\n`;
     }
@@ -108,23 +107,10 @@ async function handleSession(
     webSocket.addEventListener('message', async (event) => {
       try {
         if (event.data instanceof ArrayBuffer) {
-           // Icecast with Transfer-Encoding: chunked requires chunk size in hex first
-           // However, simple Icecast PUT often accepts raw stream if not chunked. 
-           // For simplicity in this worker, we assume raw streaming or handle basic piping.
-           // If 'Transfer-Encoding: chunked' is used above, we must wrap frames.
-           
            const data = new Uint8Array(event.data);
-           
-           if (type !== 'Shoutcast') {
-             // Wrap in HTTP Chunk format
-             const hexSize = data.length.toString(16);
-             await writer.write(encoder.encode(`${hexSize}\r\n`));
-             await writer.write(data);
-             await writer.write(encoder.encode(`\r\n`));
-           } else {
-             // Shoutcast Raw
-             await writer.write(data);
-           }
+           // FIX: Always write raw bytes. Previously we used chunked encoding wrapper for Icecast,
+           // but many servers reject it. Raw stream (Identity) is safer for live audio.
+           await writer.write(data);
         }
       } catch (err) {
         console.error('Write Error:', err);
@@ -136,22 +122,26 @@ async function handleSession(
       try { tcpSocket.close(); } catch(e) {}
     });
 
-    // 4. Read response from TCP (optional, to check for 200 OK)
-    // For a simple streamer, we might ignore inbound except to keep connection alive or debug
+    // 4. Read response from TCP (to keep connection alive and check for errors)
     const reader = tcpSocket.readable.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      // We could log server response here
-      // const decoded = new TextDecoder().decode(value);
-      // console.log("Server says:", decoded);
-    }
+    // We start reading but don't strictly block on it
+    (async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          // In a real app, we might check for "200 OK" here to confirm connection to client
+        }
+      } catch (e) {
+        // TCP Error
+      }
+    })();
 
   } catch (error) {
     console.error("Streaming Session Error:", error);
     webSocket.close(1011, "Upstream Error");
   } finally {
     if (writer) writer.releaseLock();
-    if (tcpSocket) tcpSocket.close();
+    // Socket cleanup handled by close listeners
   }
 }
