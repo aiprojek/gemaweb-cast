@@ -1,0 +1,7 @@
+{
+  "name": "GemaWeb Cast",
+  "description": "A professional browser-based radio broadcasting tool inspired by BUTT. Features real-time audio visualization, server management, and AI-powered show preparation.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
