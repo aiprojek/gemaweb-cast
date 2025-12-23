@@ -76,25 +76,30 @@ async function handleSession(
 
   try {
     // 1. Connect to Radio Server via TCP
+    // Note: Cloudflare Workers allows TCP connections to many ports, but not all. 
+    // Standard ports (80, 443, 8000, 8080) usually work.
     tcpSocket = connect({ hostname: host, port: port });
     writer = tcpSocket.writable.getWriter();
 
     // 2. Perform Handshake based on Protocol
     let handshake = '';
     
+    // Use a robust User-Agent like BUTT to ensure compatibility
+    const userAgent = 'butt/0.1.34'; 
+
     if (type === 'Shoutcast') {
-      // Shoutcast v1 Source Protocol: Just password + newline
-      handshake = `${pass}\n`;
+      // Shoutcast v1 Source Protocol: Just password + CRLF (Crucial fix: \r\n instead of \n)
+      handshake = `${pass}\r\n`;
     } else {
       // Icecast / Shoutcast v2 Source Protocol (HTTP PUT)
-      // FIX: Removed 'Transfer-Encoding: chunked' to support raw streaming which is more compatible.
+      // Note: Shoutcast v2 works best with this mode if you treat it as Icecast.
       const auth = btoa(`${user}:${pass}`);
       handshake = `PUT ${mount} HTTP/1.1\r\n` +
                   `Host: ${host}\r\n` +
                   `Authorization: Basic ${auth}\r\n` +
-                  `User-Agent: GemaWebCast/1.4\r\n` +
+                  `User-Agent: ${userAgent}\r\n` +
                   `Content-Type: audio/mpeg\r\n` +
-                  `Ice-Public: 0\r\n` +
+                  `Ice-Public: 1\r\n` +
                   `Ice-Name: GemaWeb Live\r\n` + 
                   `Expect: 100-continue\r\n` + 
                   `\r\n`;
@@ -108,32 +113,46 @@ async function handleSession(
       try {
         if (event.data instanceof ArrayBuffer) {
            const data = new Uint8Array(event.data);
-           // FIX: Always write raw bytes. Previously we used chunked encoding wrapper for Icecast,
-           // but many servers reject it. Raw stream (Identity) is safer for live audio.
+           // Stream Raw Data
            await writer.write(data);
         }
       } catch (err) {
-        console.error('Write Error:', err);
+        // Silently fail on write error, will be caught by close
         webSocket.close();
       }
     });
 
+    // 4. Handle Closure
     webSocket.addEventListener('close', () => {
       try { tcpSocket.close(); } catch(e) {}
     });
 
-    // 4. Read response from TCP (to keep connection alive and check for errors)
+    // 5. Read response from TCP to detect Auth Failure immediately
     const reader = tcpSocket.readable.getReader();
-    // We start reading but don't strictly block on it
+    const decoder = new TextDecoder();
+    
     (async () => {
       try {
+        // Read the first chunk which usually contains the headers/auth response
+        const { done, value } = await reader.read();
+        if (!done && value) {
+            const responseText = decoder.decode(value);
+            // Check for common error codes
+            if (responseText.includes('401') || responseText.includes('Forbidden') || responseText.includes('ICV')) {
+                console.error("Upstream Auth Failed:", responseText);
+                webSocket.close(1008, "Authentication Failed"); // 1008 = Policy Violation
+                return;
+            }
+        }
+        
+        // Continue reading to keep socket alive (drain)
         while (true) {
-          const { done, value } = await reader.read();
+          const { done } = await reader.read();
           if (done) break;
-          // In a real app, we might check for "200 OK" here to confirm connection to client
         }
       } catch (e) {
         // TCP Error
+        webSocket.close(1011, "Upstream Connection Error");
       }
     })();
 
@@ -142,6 +161,5 @@ async function handleSession(
     webSocket.close(1011, "Upstream Error");
   } finally {
     if (writer) writer.releaseLock();
-    // Socket cleanup handled by close listeners
   }
 }

@@ -39,26 +39,32 @@ export const onRequest: PagesFunction = async (context) => {
   let updateUrl = '';
   let authHeader = '';
 
+  // Helper to ensure proper encoding
+  const enc = (s: string) => encodeURIComponent(s);
+
   if (type === 'Shoutcast') {
     // Shoutcast v1/v2 Admin CGI
-    // http://host:port/admin.cgi?mode=updinfo&pass=password&song=Title
-    // Shoutcast often uses 'admin' as user for v2, or just pass for v1
-    updateUrl = `http://${host}:${port}/admin.cgi?mode=updinfo&pass=${encodeURIComponent(pass)}&song=${encodeURIComponent(title)}`;
-    // Some shoutcast servers need Basic Auth too
+    // V2 requires 'sid=1' (Stream ID) usually.
+    // http://host:port/admin.cgi?mode=updinfo&pass=password&song=Title&sid=1
+    updateUrl = `http://${host}:${port}/admin.cgi?mode=updinfo&pass=${enc(pass)}&song=${enc(title)}&sid=1`;
+    
+    // Some shoutcast servers need Basic Auth too, explicitly set admin
     authHeader = 'Basic ' + btoa(`admin:${pass}`);
   } else {
     // Icecast Admin
     // http://host:port/admin/metadata?mode=updinfo&mount=/stream&song=Title
-    updateUrl = `http://${host}:${port}/admin/metadata?mode=updinfo&mount=${encodeURIComponent(mount)}&song=${encodeURIComponent(title)}`;
+    updateUrl = `http://${host}:${port}/admin/metadata?mode=updinfo&mount=${enc(mount)}&song=${enc(title)}`;
     authHeader = 'Basic ' + btoa(`${user}:${pass}`);
   }
 
   try {
+    // We use a realistic User-Agent (Mozilla/BUTT) to avoid being blocked by strict server configs
     const response = await fetch(updateUrl, {
       method: 'GET',
       headers: {
         'Authorization': authHeader,
-        'User-Agent': 'GemaWebCast/1.0'
+        'User-Agent': 'Mozilla/5.0 (compatible; GemaWebCast/1.0)',
+        'Connection': 'close'
       }
     });
 
@@ -68,13 +74,13 @@ export const onRequest: PagesFunction = async (context) => {
        });
     } else {
        const text = await response.text();
-       return new Response(JSON.stringify({ error: 'Server rejected update', details: text }), { 
+       return new Response(JSON.stringify({ error: 'Server rejected update', details: text, status: response.status }), { 
          status: response.status,
          headers: { 'Content-Type': 'application/json' }
        });
     }
   } catch (err: any) {
-    return new Response(JSON.stringify({ error: 'Failed to connect to radio server', details: err.message }), { 
+    return new Response(JSON.stringify({ error: 'Failed to connect to radio server. Cloudflare may block this port.', details: err.message }), { 
         status: 502,
         headers: { 'Content-Type': 'application/json' }
     });
